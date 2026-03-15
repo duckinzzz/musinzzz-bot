@@ -1,10 +1,37 @@
+import asyncio
 import logging
 from dataclasses import dataclass
-from typing import List
+from typing import List, Callable, Any, TypeVar
 
 from yandex_music import ClientAsync, Track as YMTrack
+from yandex_music.exceptions import NetworkError
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar('T')
+
+
+def retry_async(retries: int = 3, delay: float = 1.0):
+    def decorator(func: Callable[..., Any]):
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            last_exception = None
+            for attempt in range(retries):
+                try:
+                    return await func(*args, **kwargs)
+                except NetworkError as e:
+                    last_exception = e
+                    if attempt < retries - 1:
+                        wait_time = delay * (2 ** attempt)
+                        logger.warning(
+                            f"NetworkError (attempt {attempt + 1}/{retries}): {e}. "
+                            f"Retrying in {wait_time}s..."
+                        )
+                        await asyncio.sleep(wait_time)
+            raise last_exception
+
+        return wrapper
+
+    return decorator
 
 
 class YandexMusicClient:
@@ -23,6 +50,7 @@ class YandexMusicClient:
             raise RuntimeError("Yandex Music client not initialized")
         return self._client
 
+    @retry_async(retries=3, delay=1.0)
     async def search(self, query: str) -> List["YandexTrack"]:
         result = await self.client.search(query, type_="track")
         if not result or not result.tracks or not result.tracks.results:
@@ -30,6 +58,7 @@ class YandexMusicClient:
             return []
         return [YandexTrack(track) for track in result.tracks.results[:20]]
 
+    @retry_async(retries=3, delay=1.0)
     async def get_track_data(self, track_id: str | int) -> "YandexTrack":
         tracks = await self.client.tracks([track_id])
         if not tracks or not tracks[0]:
@@ -37,6 +66,7 @@ class YandexMusicClient:
             raise ValueError(f"Track {track_id} not found")
         return YandexTrack(tracks[0])
 
+    @retry_async(retries=3, delay=1.0)
     async def get_track_with_download(self, track_id: str | int) -> tuple["YandexTrack", str]:
         tracks = await self.client.tracks([track_id])
         if not tracks or not tracks[0]:
@@ -72,6 +102,7 @@ class YandexTrack:
             int(track.duration_ms / 1000) if track.duration_ms else 0,
         )
 
+    @retry_async(retries=3, delay=1.0)
     async def get_download_link(self, track: YMTrack) -> str:
         info = await track.get_specific_download_info_async(codec="mp3", bitrate_in_kbps=320)
         if info:

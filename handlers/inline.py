@@ -15,7 +15,7 @@ from aiogram.types import (
 from core.app import bot
 from core.config import CHAT_ID
 from utils import db
-from utils.ya_music import YandexMusicClient, YandexTrack
+from utils.ya_music import YandexMusicClient, YandexTrack, logger
 
 router = Router()
 result_ids: dict[str, str] = {}
@@ -91,7 +91,12 @@ async def process_chosen_track(
             )
             tg_file_id = file.audio.file_id
             await db.save(db_yam_id, tg_file_id)
-        except Exception:
+        except Exception as e:
+            await bot.edit_message_text(
+                inline_message_id=inline_message_id,
+                text="❌Не удалось отправить трек\nПопробуйте снова",
+            )
+            logger.error(e)
             return
     else:
         track_data = await yam_client.get_track_data(full_yam_id)
