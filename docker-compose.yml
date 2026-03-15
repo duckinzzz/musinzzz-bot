@@ -1,0 +1,13 @@
+services:
+  bot:
+    build: .
+    container_name: musinzzz-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    stop_grace_period: 1m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

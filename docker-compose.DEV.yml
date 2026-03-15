@@ -1,0 +1,10 @@
+services:
+  bot:
+    build: .
+    container_name: musinzzz-bot
+    command: sh -c "watchfiles --ignore-paths 'data' 'python run.py' ."
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+
