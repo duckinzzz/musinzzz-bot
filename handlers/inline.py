@@ -1,5 +1,4 @@
 import hashlib
-import logging
 import re
 
 from aiogram import Router
@@ -15,29 +14,25 @@ from aiogram.types import (
 
 from core.app import bot
 from core.config import CHAT_ID
-from utils import ya_music, db
+from utils import db
+from utils.ya_music import YandexMusicClient, YandexTrack
 
-logger = logging.getLogger(__name__)
 router = Router()
 result_ids: dict[str, str] = {}
 
 
 def get_loading_markup(track_id: str | int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="⏳", callback_data=str(track_id))]
-        ]
+        inline_keyboard=[[InlineKeyboardButton(text="⏳", callback_data=str(track_id))]]
     )
 
 
-def track_as_inline_result(track: ya_music.YandexTrack) -> InlineQueryResultAudio:
+def track_as_inline_result(track: YandexTrack) -> InlineQueryResultAudio:
     result_id = hashlib.md5(str(track.yandex_track_id).encode()).hexdigest()
     result_ids[result_id] = track.yandex_track_id
-    placeholder_url = "https://cdn.jsdelivr.net/gh/duckinzzz/musinzzz-bot/baoba.mp3"
-
     return InlineQueryResultAudio(
         id=result_id,
-        audio_url=placeholder_url,
+        audio_url="https://cdn.jsdelivr.net/gh/duckinzzz/musinzzz-bot/baoba.mp3",
         title=track.title,
         performer=track.artists,
         audio_duration=track.duration,
@@ -45,58 +40,46 @@ def track_as_inline_result(track: ya_music.YandexTrack) -> InlineQueryResultAudi
     )
 
 
-
 @router.inline_query()
-async def inline_search(inline_query: InlineQuery):
-    items = []
+async def inline_search(inline_query: InlineQuery, yam_client: YandexMusicClient):
     query = inline_query.query
+    items = []
 
-    if not query:
-        pass
-    elif query.startswith("https://"):
+    if query.startswith("https://"):
         match = re.match(
             r"https://music.yandex.(ru|by|kz|com)/album/(\d+)/track/(\d+)", query
         )
         if match:
             album_id, track_id = match.group(2), match.group(3)
             full_id = f"{track_id}:{album_id}"
-            track = ya_music.get_track_data(full_id)
+            track = await yam_client.get_track_data(full_id)
             items.append(track_as_inline_result(track))
-    else:
-        tracks = ya_music.search(query)
+    elif query:
+        tracks = await yam_client.search(query)
         items = [track_as_inline_result(track) for track in tracks]
 
     await bot.answer_inline_query(inline_query.id, results=items, cache_time=5)
 
 
 @router.chosen_inline_result()
-async def process_chosen_track(chosen_result: ChosenInlineResult):
+async def process_chosen_track(
+        chosen_result: ChosenInlineResult,
+        yam_client: YandexMusicClient,
+):
     result_id = chosen_result.result_id
     inline_message_id = chosen_result.inline_message_id
 
-    if not inline_message_id:
-        return
-
-    if result_id not in result_ids:
+    if not inline_message_id or result_id not in result_ids:
         return
 
     full_yam_id = result_ids[result_id]
+    db_yam_id = full_yam_id.split(":", 1)[0] if ":" in full_yam_id else full_yam_id
 
-    if ":" in full_yam_id:
-        track_id, album_id = full_yam_id.split(":", 1)
-        db_yam_id = track_id
-    else:
-        db_yam_id = full_yam_id
-
-    cached = db.get(db_yam_id)
+    cached = await db.get(db_yam_id)
     tg_file_id = cached.tg_file_id if cached else None
-    logger.info(f"Cache {'hit' if cached else 'miss'} for {db_yam_id}")
-
-    track_data = ya_music.get_track_data(full_yam_id)
 
     if not tg_file_id:
-        download_link = track_data.get_download_link()
-
+        track_data, download_link = await yam_client.get_track_with_download(full_yam_id)
         try:
             file = await bot.send_audio(
                 chat_id=CHAT_ID,
@@ -107,10 +90,11 @@ async def process_chosen_track(chosen_result: ChosenInlineResult):
                 duration=track_data.duration,
             )
             tg_file_id = file.audio.file_id
-            db.save(db_yam_id, tg_file_id)
-        except Exception as e:
-            logger.error(f"Upload error: {e}")
+            await db.save(db_yam_id, tg_file_id)
+        except Exception:
             return
+    else:
+        track_data = await yam_client.get_track_data(full_yam_id)
 
     await bot.edit_message_media(
         media=InputMediaAudio(
@@ -123,9 +107,8 @@ async def process_chosen_track(chosen_result: ChosenInlineResult):
         inline_message_id=inline_message_id,
     )
 
-    caption = f"<a href='{track_data.link}'>Я.Музыка</a>"
     await bot.edit_message_caption(
         inline_message_id=inline_message_id,
-        caption=caption,
+        caption=f"<a href='{track_data.link}'>Я.Музыка</a>",
         parse_mode="HTML",
     )
