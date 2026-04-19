@@ -17,8 +17,16 @@ async def fetch_songlink_data(url):
             data = await response.json()
 
             links = data.get('linksByPlatform', {})
-            yandex_track_id = links.get('yandex')['url'].split('/')[-1]
-            songlink_url = data.get('pageUrl', {})
+
+            yandex_track_id = (
+                links.get('yandex', {})
+                .get('url')
+            )
+
+            if yandex_track_id:
+                yandex_track_id = yandex_track_id.split('/')[-1]
+
+            songlink_url = data.get('pageUrl')
 
             if songlink_url:
                 return yandex_track_id, songlink_url
