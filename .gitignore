@@ -5,6 +5,3 @@ data/
 
 *.env
 *.log
-
-pyproject.toml
-uv.lock

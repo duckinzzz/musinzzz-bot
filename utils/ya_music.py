@@ -1,14 +1,12 @@
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import List, Callable, Any, TypeVar
+from typing import Callable, Any
 
 from yandex_music import ClientAsync, Track as YMTrack
 from yandex_music.exceptions import NetworkError
 
 logger = logging.getLogger(__name__)
-
-T = TypeVar('T')
 
 
 def retry_async(retries: int = 3, delay: float = 1.0):
@@ -51,29 +49,30 @@ class YandexMusicClient:
         return self._client
 
     @retry_async(retries=3, delay=1.0)
-    async def search(self, query: str) -> List["YandexTrack"]:
+    async def search(self, query: str) -> list["YandexTrack"]:
         result = await self.client.search(query, type_="track")
         if not result or not result.tracks or not result.tracks.results:
             logger.warning(f"No results found for query: '{query}'")
             return []
         return [YandexTrack(track) for track in result.tracks.results[:20]]
 
-    @retry_async(retries=3, delay=1.0)
-    async def get_track_data(self, track_id: str | int) -> "YandexTrack":
+    async def _get_track(self, track_id: str | int) -> YMTrack:
         tracks = await self.client.tracks([track_id])
         if not tracks or not tracks[0]:
             logger.error(f"Track {track_id} not found")
             raise ValueError(f"Track {track_id} not found")
-        return YandexTrack(tracks[0])
+        return tracks[0]
+
+    @retry_async(retries=3, delay=1.0)
+    async def get_track_data(self, track_id: str | int) -> "YandexTrack":
+        track = await self._get_track(track_id)
+        return YandexTrack(track)
 
     @retry_async(retries=3, delay=1.0)
     async def get_track_with_download(self, track_id: str | int) -> tuple["YandexTrack", str]:
-        tracks = await self.client.tracks([track_id])
-        if not tracks or not tracks[0]:
-            logger.error(f"Track {track_id} not found")
-            raise ValueError(f"Track {track_id} not found")
-        track = YandexTrack(tracks[0])
-        link = await track.get_download_link(tracks[0])
+        ymtrack = await self._get_track(track_id)
+        track = YandexTrack(ymtrack)
+        link = await track.get_download_link(ymtrack)
         return track, link
 
 

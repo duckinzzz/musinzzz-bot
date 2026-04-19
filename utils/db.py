@@ -10,7 +10,7 @@ db_dir = Path(DB_PATH).parent
 db_dir.mkdir(parents=True, exist_ok=True)
 
 engine = create_async_engine(f"sqlite+aiosqlite:///{DB_PATH}", echo=False)
-AsyncSession = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+session_factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
 Base = declarative_base()
 
 
@@ -27,11 +27,11 @@ async def init_db():
 
 
 async def get(yam_id: str) -> CachedAudio | None:
-    async with AsyncSession() as session:
+    async with session_factory() as session:
         return await session.get(CachedAudio, yam_id)
 
 
 async def save(yam_id: str, tg_file_id: str):
-    async with AsyncSession() as session:
+    async with session_factory() as session:
         session.add(CachedAudio(id=yam_id, yam_id=yam_id, tg_file_id=tg_file_id))
         await session.commit()
