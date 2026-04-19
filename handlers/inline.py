@@ -10,11 +10,14 @@ from aiogram.types import (
     InputMediaAudio,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InlineQueryResultArticle,
+    InputTextMessageContent,
 )
 
 from core.app import bot
 from core.config import CHAT_ID
 from utils import db
+from utils.songlink import fetch_songlink_data
 from utils.ya_music import YandexMusicClient, YandexTrack, logger
 
 router = Router()
@@ -40,6 +43,17 @@ def track_as_inline_result(track: YandexTrack) -> InlineQueryResultAudio:
     )
 
 
+def message_as_inline_result(header: str, message: str) -> InlineQueryResultArticle:
+    return InlineQueryResultArticle(
+        type='article',
+        id=hashlib.md5(message.encode()).hexdigest(),
+        title=header,
+        input_message_content=InputTextMessageContent(
+            message_text=message, parse_mode='HTML'
+        ),
+    )
+
+
 @router.inline_query()
 async def inline_search(inline_query: InlineQuery, yam_client: YandexMusicClient):
     query = inline_query.query
@@ -54,11 +68,43 @@ async def inline_search(inline_query: InlineQuery, yam_client: YandexMusicClient
             full_id = f"{track_id}:{album_id}"
             track = await yam_client.get_track_data(full_id)
             items.append(track_as_inline_result(track))
+        else:
+            try:
+                track_id, sl_url = await fetch_songlink_data(query)
+                if track_id:
+                    track = await yam_client.get_track_data(track_id)
+                    items.append(track_as_inline_result(track))
+                else:
+                    await bot.answer_inline_query(
+                        inline_query.id,
+                        results=[
+                            message_as_inline_result(
+                                'Трека нет на Я.Музыке, отправится ссылка на song.link',
+                                f"<a href='{sl_url}'>song.link</a>")
+                        ],
+                        is_personal=True,
+                        cache_time=1
+                    )
+                    return
+
+            except Exception as e:
+                logger.error(e)
+                await bot.answer_inline_query(
+                    inline_query.id,
+                    results=[message_as_inline_result('Убедитесь что ссылка верна',
+                                                      'Убедитесь что ссылка верна')],
+                    is_personal=True,
+                    cache_time=1,
+                )
+                return
+
     elif query:
         tracks = await yam_client.search(query)
         items = [track_as_inline_result(track) for track in tracks]
 
-    await bot.answer_inline_query(inline_query.id, results=items, cache_time=5)
+    await bot.answer_inline_query(inline_query.id,
+                                  results=items,
+                                  cache_time=5)
 
 
 @router.chosen_inline_result()
@@ -114,6 +160,7 @@ async def process_chosen_track(
 
     await bot.edit_message_caption(
         inline_message_id=inline_message_id,
-        caption=f"<a href='{track_data.link}'>Я.Музыка</a>",
+        caption=f"<a href='{track_data.link}'>Я.Музыка</a>\n"
+                f"<a href='{f'odesli.co/{track_data.link}'}'>song.link</a>",
         parse_mode="HTML",
     )
