@@ -1,6 +1,6 @@
 import asyncio
 
-from core.app import bot, dp, logger, YandexMusicMiddleware
+from core.app import bot, BotStatsMiddleware, dp, logger, YandexMusicMiddleware
 from core.config import YAM_TOKEN
 from handlers.inline import router as inline_router
 from utils.db import init_db
@@ -12,6 +12,7 @@ async def main():
     await yam_client.init()
 
     dp.update.middleware(YandexMusicMiddleware(yam_client))
+    dp.update.middleware(BotStatsMiddleware())
     dp.include_router(inline_router)
 
     await init_db()
