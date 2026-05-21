@@ -10,4 +10,5 @@ dependencies = [
     "watchfiles>=1.1.1",
     "yandex-music>=2.2.0",
     "aiosqlite>=0.19.0",
+    "yt-dlp>=2026.3.17",
 ]

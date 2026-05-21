@@ -19,9 +19,11 @@ from core.config import CHAT_ID
 from utils import db
 from utils.songlink import fetch_songlink_data
 from utils.ya_music import YandexMusicClient, YandexTrack, logger
+from utils.ytdlp import ExternalTrack, extract_track_info, is_direct_extract_url
 
 router = Router()
 result_ids: dict[str, str] = {}
+EXTERNAL_AUDIO_CACHE_VERSION = "ext-audio-v2:"
 
 
 def get_loading_markup(track_id: str | int) -> InlineKeyboardMarkup:
@@ -43,6 +45,19 @@ def track_as_inline_result(track: YandexTrack) -> InlineQueryResultAudio:
     )
 
 
+def external_track_as_inline_result(track: ExternalTrack) -> InlineQueryResultAudio:
+    result_id = hashlib.md5(track.url.encode()).hexdigest()
+    result_ids[result_id] = f"ext:{track.url}"
+    return InlineQueryResultAudio(
+        id=result_id,
+        audio_url="https://cdn.jsdelivr.net/gh/duckinzzz/musinzzz-bot/baoba.mp3",
+        title=track.title,
+        performer=track.artist,
+        audio_duration=track.duration,
+        reply_markup=get_loading_markup(result_id),
+    )
+
+
 def message_as_inline_result(header: str, message: str) -> InlineQueryResultArticle:
     return InlineQueryResultArticle(
         type='article',
@@ -60,14 +75,30 @@ async def inline_search(inline_query: InlineQuery, yam_client: YandexMusicClient
     items = []
 
     if query.startswith("https://"):
-        match = re.match(
+        is_yandex = re.match(
             r"https://music.yandex.(ru|by|kz|com)/album/(\d+)/track/(\d+)", query
         )
-        if match:
-            album_id, track_id = match.group(2), match.group(3)
+        if is_yandex:
+            album_id, track_id = is_yandex.group(2), is_yandex.group(3)
             full_id = f"{track_id}:{album_id}"
             track = await yam_client.get_track_data(full_id)
             items.append(track_as_inline_result(track))
+        elif is_direct_extract_url(query):
+            try:
+                external_track = await extract_track_info(query)
+                items.append(external_track_as_inline_result(external_track))
+            except Exception as e:
+                logger.error(f"Failed to extract external URL {query}: {e}")
+                await bot.answer_inline_query(
+                    inline_query.id,
+                    results=[message_as_inline_result(
+                        'Не удалось загрузить трек',
+                        'Не удалось загрузить трек'
+                    )],
+                    is_personal=True,
+                    cache_time=1,
+                )
+                return
         else:
             try:
                 track_id, sl_url = await fetch_songlink_data(query)
@@ -107,6 +138,60 @@ async def inline_search(inline_query: InlineQuery, yam_client: YandexMusicClient
                                   cache_time=5)
 
 
+async def process_external_track(stored_id: str, inline_message_id: str) -> None:
+    source_url = stored_id.removeprefix("ext:")
+    db_cache_key = hashlib.md5(
+        f"{EXTERNAL_AUDIO_CACHE_VERSION}{source_url}".encode()
+    ).hexdigest()
+
+    cached = await db.get(db_cache_key)
+    tg_file_id = cached.tg_file_id if cached else None
+
+    if not tg_file_id:
+        track = await extract_track_info(source_url)
+        try:
+            file = await bot.send_audio(
+                chat_id=CHAT_ID,
+                audio=URLInputFile(
+                    track.direct_url,
+                    headers=track.http_headers,
+                    filename=track.filename,
+                ),
+                title=track.title,
+                performer=track.artist,
+                thumbnail=URLInputFile(track.thumbnail) if track.thumbnail else None,
+                duration=track.duration,
+            )
+            tg_file_id = file.audio.file_id
+            await db.save(db_cache_key, tg_file_id)
+        except Exception as e:
+            await bot.edit_message_text(
+                inline_message_id=inline_message_id,
+                text="❌Не удалось отправить трек\nПопробуйте снова",
+            )
+            logger.error(e)
+            return
+    else:
+        track = await extract_track_info(source_url)
+
+    await bot.edit_message_media(
+        media=InputMediaAudio(
+            media=tg_file_id,
+            title=track.title,
+            performer=track.artist,
+            thumbnail=URLInputFile(track.thumbnail) if track.thumbnail else None,
+            duration=track.duration,
+        ),
+        inline_message_id=inline_message_id,
+    )
+
+    await bot.edit_message_caption(
+        inline_message_id=inline_message_id,
+        caption=f"<a href='{source_url}'>Source</a>",
+        parse_mode="HTML",
+    )
+
+
 @router.chosen_inline_result()
 async def process_chosen_track(
         chosen_result: ChosenInlineResult,
@@ -119,6 +204,11 @@ async def process_chosen_track(
         return
 
     full_yam_id = result_ids[result_id]
+
+    if full_yam_id.startswith("ext:"):
+        await process_external_track(full_yam_id, inline_message_id)
+        return
+
     db_yam_id = full_yam_id.split(":", 1)[0] if ":" in full_yam_id else full_yam_id
 
     cached = await db.get(db_yam_id)
