@@ -19,11 +19,17 @@ from core.config import CHAT_ID
 from utils import db
 from utils.songlink import fetch_songlink_data
 from utils.ya_music import YandexMusicClient, YandexTrack, logger
-from utils.ytdlp import ExternalTrack, extract_track_info, is_direct_extract_url
+from utils.ytdlp import (
+    ExternalTrack,
+    ProtectedTrackError,
+    extract_track_info,
+    is_direct_extract_url,
+)
 
 router = Router()
 result_ids: dict[str, str] = {}
 EXTERNAL_AUDIO_CACHE_VERSION = "ext-audio-v2:"
+TRACK_PROTECTED_MESSAGE = "Трек защищен от скачивания"
 
 
 def get_loading_markup(track_id: str | int) -> InlineKeyboardMarkup:
@@ -87,6 +93,20 @@ async def inline_search(inline_query: InlineQuery, yam_client: YandexMusicClient
             try:
                 external_track = await extract_track_info(query)
                 items.append(external_track_as_inline_result(external_track))
+            except ProtectedTrackError as e:
+                logger.info(f"Protected external URL {query}: {e}")
+                await bot.answer_inline_query(
+                    inline_query.id,
+                    results=[
+                        message_as_inline_result(
+                            TRACK_PROTECTED_MESSAGE,
+                            TRACK_PROTECTED_MESSAGE,
+                        )
+                    ],
+                    is_personal=True,
+                    cache_time=1,
+                )
+                return
             except Exception as e:
                 logger.error(f"Failed to extract external URL {query}: {e}")
                 await bot.answer_inline_query(
@@ -147,9 +167,9 @@ async def process_external_track(stored_id: str, inline_message_id: str) -> None
     cached = await db.get(db_cache_key)
     tg_file_id = cached.tg_file_id if cached else None
 
-    if not tg_file_id:
-        track = await extract_track_info(source_url)
-        try:
+    try:
+        if not tg_file_id:
+            track = await extract_track_info(source_url)
             file = await bot.send_audio(
                 chat_id=CHAT_ID,
                 audio=URLInputFile(
@@ -164,15 +184,22 @@ async def process_external_track(stored_id: str, inline_message_id: str) -> None
             )
             tg_file_id = file.audio.file_id
             await db.save(db_cache_key, tg_file_id)
-        except Exception as e:
-            await bot.edit_message_text(
-                inline_message_id=inline_message_id,
-                text="❌Не удалось отправить трек\nПопробуйте снова",
-            )
-            logger.error(e)
-            return
-    else:
-        track = await extract_track_info(source_url)
+        else:
+            track = await extract_track_info(source_url)
+    except ProtectedTrackError as e:
+        await bot.edit_message_text(
+            inline_message_id=inline_message_id,
+            text=TRACK_PROTECTED_MESSAGE,
+        )
+        logger.info(f"Protected external URL {source_url}: {e}")
+        return
+    except Exception as e:
+        await bot.edit_message_text(
+            inline_message_id=inline_message_id,
+            text="❌Не удалось отправить трек\nПопробуйте снова",
+        )
+        logger.error(e)
+        return
 
     await bot.edit_message_media(
         media=InputMediaAudio(
