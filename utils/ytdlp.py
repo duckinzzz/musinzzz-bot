@@ -13,7 +13,8 @@ from yt_dlp.utils import DownloadError
 logger = logging.getLogger(__name__)
 
 DIRECT_EXTRACT_PATTERNS = [
-    r"https://soundcloud\.com/[^/]+/[^/]+",
+    r"https://(www\.)?soundcloud\.com/[^/]+/[^/]+",
+    r"https://on\.soundcloud\.com/[^/]+",
     r"https://(www\.)?youtube\.com/watch\?v=",
     r"https://youtu\.be/[^/]+",
 ]
