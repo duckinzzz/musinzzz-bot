@@ -11,7 +11,7 @@ from aiogram.types import TelegramObject, Update
 from core.config import BOTSTATS_API_TOKEN, BOT_TOKEN
 from utils.ya_music import YandexMusicClient
 
-BOTSTATS_URL = "http://duckinzzz.ru/botstats/api/"
+BOTSTATS_URL = "https://botstats.duckinzzz.ru/api/"
 
 logging.basicConfig(
     level=logging.INFO,
