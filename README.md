@@ -6,8 +6,8 @@
 
 - Locally
 ```bash
-pip install -r requirements.txt
-python run.py
+uv sync
+uv run python run.py
 ```
 
 - Docker with hot reload (dev mode):
