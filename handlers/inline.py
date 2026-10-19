@@ -1,8 +1,12 @@
 import hashlib
 import re
+import shutil
+import tempfile
+from pathlib import Path
 
 from aiogram import Router
 from aiogram.types import (
+    FSInputFile,
     InlineQuery,
     ChosenInlineResult,
     InlineQueryResultAudio,
@@ -22,6 +26,7 @@ from utils.ya_music import YandexMusicClient, YandexTrack, logger
 from utils.ytdlp import (
     ExternalTrack,
     ProtectedTrackError,
+    download_track,
     extract_track_info,
     is_direct_extract_url,
 )
@@ -158,6 +163,28 @@ async def inline_search(inline_query: InlineQuery, yam_client: YandexMusicClient
                                   cache_time=5)
 
 
+async def _track_audio_input(track: ExternalTrack) -> URLInputFile | FSInputFile:
+    """Direct URLs are streamed by Telegram; HLS-only tracks we download ourselves."""
+    if not track.needs_download and track.direct_url:
+        return URLInputFile(
+            track.direct_url,
+            headers=track.http_headers,
+            filename=track.filename,
+        )
+    directory = Path(tempfile.mkdtemp(prefix="musinzzz-ext-"))
+    try:
+        path = await download_track(track, directory)
+    except Exception:
+        shutil.rmtree(directory, ignore_errors=True)
+        raise
+    return FSInputFile(path, filename=track.filename)
+
+
+def _cleanup_audio_input(audio: URLInputFile | FSInputFile) -> None:
+    if isinstance(audio, FSInputFile):
+        shutil.rmtree(Path(audio.path).parent, ignore_errors=True)
+
+
 async def process_external_track(stored_id: str, inline_message_id: str) -> None:
     source_url = stored_id.removeprefix("ext:")
     db_cache_key = hashlib.md5(
@@ -170,18 +197,18 @@ async def process_external_track(stored_id: str, inline_message_id: str) -> None
     try:
         if not tg_file_id:
             track = await extract_track_info(source_url)
-            file = await bot.send_audio(
-                chat_id=CHAT_ID,
-                audio=URLInputFile(
-                    track.direct_url,
-                    headers=track.http_headers,
-                    filename=track.filename,
-                ),
-                title=track.title,
-                performer=track.artist,
-                thumbnail=URLInputFile(track.thumbnail) if track.thumbnail else None,
-                duration=track.duration,
-            )
+            audio = await _track_audio_input(track)
+            try:
+                file = await bot.send_audio(
+                    chat_id=CHAT_ID,
+                    audio=audio,
+                    title=track.title,
+                    performer=track.artist,
+                    thumbnail=URLInputFile(track.thumbnail) if track.thumbnail else None,
+                    duration=track.duration,
+                )
+            finally:
+                _cleanup_audio_input(audio)
             tg_file_id = file.audio.file_id
             await db.save(db_cache_key, tg_file_id)
         else:

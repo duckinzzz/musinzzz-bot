@@ -3,6 +3,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -27,9 +28,11 @@ class ExternalTrack:
     artist: str
     duration: int
     thumbnail: str | None
-    direct_url: str
+    direct_url: str | None
     http_headers: dict[str, str]
     filename: str
+    format_id: str | None = None
+    needs_download: bool = False
 
 
 class ProtectedTrackError(RuntimeError):
@@ -70,31 +73,45 @@ def _number(value) -> float:
         return 0.0
 
 
+def _protocol(format_info: dict) -> str:
+    return (format_info.get("protocol") or "").lower()
+
+
+def _is_hls_file(format_info: dict) -> bool:
+    return bool(format_info.get("url")) and _protocol(format_info).startswith("m3u8")
+
+
 def _is_direct_file(format_info: dict) -> bool:
-    protocol = (format_info.get("protocol") or "").lower()
     return bool(format_info.get("url")) and not any(
-        marker in protocol for marker in STREAMING_PROTOCOL_MARKERS
+        marker in _protocol(format_info) for marker in STREAMING_PROTOCOL_MARKERS
     )
 
 
-def _is_supported_direct_audio(format_info: dict) -> bool:
+def _is_supported_audio(format_info: dict) -> bool:
     return (
-        _is_direct_file(format_info)
+        (_is_direct_file(format_info) or _is_hls_file(format_info))
         and format_info.get("ext") in TELEGRAM_AUDIO_EXTENSIONS
     )
 
 
-def _select_telegram_audio_format(info: dict) -> dict:
+def _select_telegram_audio_format(info: dict) -> dict | None:
+    """Pick the best audio format Telegram can play.
+
+    Direct files are preferred: they can be streamed by Telegram straight from
+    the source URL. HLS-only formats (SoundCloud serves these since 2026) have
+    to be downloaded and uploaded by the bot instead.
+    """
     formats = [
         fmt for fmt in info.get("formats", [])
-        if _is_supported_direct_audio(fmt)
+        if _is_supported_audio(fmt)
     ]
     if not formats:
-        return info
+        return None
 
     return max(
         formats,
         key=lambda fmt: (
+            _is_direct_file(fmt),
             fmt.get("ext") == "mp3",
             _number(fmt.get("abr") or fmt.get("tbr")),
         ),
@@ -165,19 +182,44 @@ async def extract_track_info(url: str) -> ExternalTrack:
                     raise ProtectedTrackError("Track is protected from download") from e
                 raise
             selected_format = _select_telegram_audio_format(info)
-            if not _is_supported_direct_audio(selected_format):
-                raise ProtectedTrackError("Track has no direct downloadable audio")
+            if selected_format is None:
+                raise ProtectedTrackError("Track has no downloadable audio")
             title = info.get('title', 'Unknown')
             ext = selected_format.get('ext') or info.get('ext')
+            needs_download = not _is_direct_file(selected_format)
             return ExternalTrack(
                 url=url,
                 title=title,
                 artist=info.get('uploader', 'Unknown'),
                 duration=int(info.get('duration', 0)) if info.get('duration') else 0,
                 thumbnail=info.get('thumbnail'),
-                direct_url=selected_format.get('url') or info.get('url'),
+                direct_url=None if needs_download else selected_format.get('url'),
                 http_headers=selected_format.get('http_headers') or info.get('http_headers') or {},
                 filename=_safe_filename(title, ext),
+                format_id=selected_format.get('format_id'),
+                needs_download=needs_download,
             )
 
     return await asyncio.to_thread(_extract)
+
+
+async def download_track(track: ExternalTrack, directory: Path) -> Path:
+    """Download a track that is only available as an HLS stream.
+
+    Returns the path of the downloaded file inside `directory`; the caller owns
+    the directory and must remove it afterwards.
+    """
+    def _download() -> Path:
+        ydl_opts = {
+            'format': track.format_id or 'bestaudio',
+            'outtmpl': str(directory / '%(id)s.%(ext)s'),
+            'quiet': True,
+            'logger': _YtDlpLogger(),
+            'no_warnings': True,
+            'noplaylist': True,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(track.url, download=True)
+            return Path(ydl.prepare_filename(info))
+
+    return await asyncio.to_thread(_download)
